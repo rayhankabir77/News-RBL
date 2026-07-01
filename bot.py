@@ -27,7 +27,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 
 
 # --- ২. ফায়ারবেস ও টেলিগ্রাম এনভায়রনমেন্ট চেক ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = "8801321117:AAHMGpD1B5honA0Y5wQi4YGjsaFWfPhLDDw"
 RTDB_URL = os.getenv("RTDB_URL")
 FIREBASE_ADMIN_ENV = os.getenv("FIREBASE_ADMIN")
 
