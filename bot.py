@@ -6,7 +6,7 @@ from telebot import TeleBot, types
 import firebase_admin
 from firebase_admin import credentials, db
 
-# --- ১. Flask ওয়েব সার্ভার সেটআপ (রেন্ডার কিপ-অ্যালাইভ ও /check পিন হ্যান্ডেল করার জন্য) ---
+# --- ১. Flask ওয়েব সার্ভার সেটআপ ---
 app = Flask(__name__)
 
 @app.route('/check')
@@ -18,7 +18,6 @@ def home():
     return "Bot is running!", 200
 
 def run_flask():
-    # রেন্ডার সাধারণত PORT এনভায়রনমেন্ট ভ্যারিয়েবল পাঠায়, না থাকলে ১০০০০ ব্যবহার করবে
     port = int(os.getenv("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -27,7 +26,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 
 
 # --- ২. ফায়ারবেস ও টেলিগ্রাম এনভায়রনমেন্ট চেক ---
-BOT_TOKEN = "8801321117:AAHMGpD1B5honA0Y5wQi4YGjsaFWfPhLDDw"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 RTDB_URL = os.getenv("RTDB_URL")
 FIREBASE_ADMIN_ENV = os.getenv("FIREBASE_ADMIN")
 
@@ -38,7 +37,6 @@ if not RTDB_URL:
     raise ValueError("Error: RTDB_URL is missing! Please set it in Render dashboard.")
 
 if not FIREBASE_ADMIN_ENV:
-    # ক্র্যাশ না করে লগ-এ পরিষ্কার মেসেজ দেখানোর জন্য
     raise ValueError("Error: FIREBASE_ADMIN is missing! Please add your Firebase JSON credentials to Render Environment Variables.")
 
 # ফায়ারবেস ইনিশিয়ালাইজেশন
@@ -198,129 +196,58 @@ def handle_verify(call):
         print(f"Error in verification: {e}")
 
 
-# --- Gmail অ্যাকাউন্ট ক্রিয়েশন ও টাস্ক লোডিং ---
+# --- Gmail অ্যাকাউন্ট ক্রিয়েশন (সকল কাজ এক মেসেজে কপি সুবিধাসহ প্রদর্শন) ---
 @bot.message_handler(func=lambda m: m.text == '➕ Create Gmail Account')
 def handle_gmail_tasks(message):
     chat_id = message.chat.id
     loading_msg = bot.send_message(chat_id, "🔎 checking task ....")
 
     try:
-        tasks_ref = db.reference('task').limit_to_first(10)
+        tasks_ref = db.reference('task')
         tasks = tasks_ref.get()
 
         if not tasks:
-            bot.edit_message_text("কোনো টাস্ক avilabe নেই", chat_id, loading_msg.message_id)
+            bot.edit_message_text("কোনো টাস্ক available নেই।", chat_id, loading_msg.message_id)
             return
 
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons = []
+        # সকল টাস্ক একসাথে একটি মেসেজে সাজানো হচ্ছে (Markdown ফরম্যাটে যাতে ক্লিক করলে আইডি ও পাস কপি হয়)
+        msg_lines = ["📋 **সকল কাজসমূহ:**\n"]
         for task_id, task_info in tasks.items():
-            # নিরাপদ চেক: টাস্ক ডেটা ডিকশনারি হলে get() ব্যবহার করবে, স্ট্রিং হলে সরাসরি সেই স্ট্রিং টেক্সট ব্যবহার করবে
+            title = "N/A"
+            password = "N/A"
             if isinstance(task_info, dict):
-                title = task_info.get('title', f"Task {task_id}")
+                title = task_info.get('title', 'N/A')
+                password = task_info.get('pass', 'N/A')
             else:
                 title = str(task_info)
-            buttons.append(types.InlineKeyboardButton(title, callback_data=f"view_task:{task_id}"))
+                
+            msg_lines.append(
+                f"📌 **টাস্ক টাইটেল:** {title}\n"
+                f"🆔 **আইডি:** `{task_id}` (ক্লিক করলে কপি হবে)\n"
+                f"🔑 **পাসওয়ার্ড:** `{password}` (ক্লিক করলে কপি হবে)\n"
+                f"------------------------"
+            )
 
-        markup.add(*buttons)
-        markup.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_home"))
+        full_msg = "\n".join(msg_lines)
 
-        bot.edit_message_text("check completed ✅", chat_id, loading_msg.message_id, reply_markup=markup)
+        try:
+            bot.delete_message(chat_id, loading_msg.message_id)
+        except Exception:
+            pass
+
+        # সকল ডাটা একসাথে মেসেজে সেন্ড করা হলো
+        bot.send_message(chat_id, full_msg, parse_mode="Markdown")
+        bot.send_message(chat_id, "যে কাজ করতে চান সেইটার আইডি দিন:")
+
+        # ইউজারের স্টেট সেট করা হলো আইডি নেওয়ার জন্য
+        user_states[chat_id] = {
+            'step': 'get_task_id'
+        }
+        start_timeout_timer(chat_id, 300) # ৫ মিনিট সময় দেওয়া হলো
 
     except Exception as e:
         print(f"Error checking tasks: {e}")
         bot.edit_message_text("টাস্ক লোড করতে সমস্যা হয়েছে।", chat_id, loading_msg.message_id)
-
-
-# টাস্ক ডিটেইলস
-@bot.callback_query_handler(func=lambda call: call.data.startswith('view_task:'))
-def view_task_details(call):
-    chat_id = call.message.chat.id
-    task_id = call.data.split(':')[1]
-
-    try:
-        task_info = db.reference(f'task/{task_id}').get()
-        if not task_info:
-            bot.answer_callback_query(call.id, "টাস্কটি আর পাওয়া যাচ্ছে না।", show_alert=True)
-            return
-
-        bot.answer_callback_query(call.id)
-        
-        if isinstance(task_info, dict):
-            desc = task_info.get('description', 'কোনো বিবরণ নেই।')
-        else:
-            desc = str(task_info)
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.row(types.InlineKeyboardButton("Complete Task", callback_data=f"complete_task:{task_id}"))
-        markup.row(types.InlineKeyboardButton("🔙 Back", callback_data="back_to_home"))
-
-        bot.send_message(chat_id, f"📋 টাস্ক বিবরণ:\n{desc}", reply_markup=markup)
-    except Exception as e:
-        print(e)
-
-
-# সাবমিশন শুরু (নাম চাওয়া)
-@bot.callback_query_handler(func=lambda call: call.data.startswith('complete_task:'))
-def start_task_submission(call):
-    chat_id = call.message.chat.id
-    task_id = call.data.split(':')[1]
-    bot.answer_callback_query(call.id)
-
-    user_states[chat_id] = {
-        'step': 'get_name',
-        'task_id': task_id,
-        'name': '',
-        'password': ''
-    }
-    
-    start_timeout_timer(chat_id, 300)
-    bot.send_message(chat_id, "Gmail আইডি এর নাম দিন (সময়: ৫ মিনিট)")
-
-
-# মেসেজ হ্যান্ডলিং (নাম ও পাসওয়ার্ড প্রসেস)
-@bot.message_handler(func=lambda m: m.chat.id in user_states)
-def process_submission_steps(message):
-    chat_id = message.chat.id
-    user_id = str(chat_id)
-    state = user_states[chat_id]
-    step = state.get('step')
-
-    if step == 'get_name':
-        state['name'] = message.text
-        state['step'] = 'get_password'
-        
-        start_timeout_timer(chat_id, 30)
-        bot.send_message(chat_id, "পাসওয়ার্ড দিন (সময়: ৩০ সেকেন্ড)")
-
-    elif step == 'get_password':
-        state['password'] = message.text
-        
-        if 'timer' in state:
-            state['timer'].cancel()
-
-        try:
-            db.reference(f'submit/{user_id}').set({
-                'task_id': state['task_id'],
-                'gmail_name': state['name'],
-                'gmail_password': state['password'],
-                'status': 'pending'
-            })
-            
-            user_ref = db.reference(f'user/{user_id}')
-            user_data = user_ref.get() or {}
-            current_pending = user_data.get('pending_balance', 0)
-            user_ref.update({
-                'pending_balance': current_pending + 12
-            })
-
-            bot.send_message(chat_id, "আপনার টাস্ক সফল ভাবে সাবমিট করা হয়েছে। এডমিন রিভিউ করে ২৪ ঘণ্টার মধ্যে আপনাকে জানানো হবে।")
-
-        except Exception as e:
-            print(f"Database write error: {e}")
-            bot.send_message(chat_id, "টাস্ক সাবমিট করতে সমস্যা হয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।")
-        
-        clear_user_state(chat_id)
 
 
 # --- ড্যাশবোর্ড, উইথড্র, রেফার এবং সাপোর্ট ---
@@ -344,12 +271,17 @@ def handle_menu_buttons(message):
             bot.send_message(chat_id, dashboard_text)
 
         elif text == '💳 Withdraw':
-            markup = types.InlineKeyboardMarkup()
-            markup.row(
-                types.InlineKeyboardButton("বিকাশ", callback_data="withdraw_method:Bkash"),
-                types.InlineKeyboardButton("নগদ", callback_data="withdraw_method:Nagad")
-            )
-            bot.send_message(chat_id, "টাকা তোলার জন্য মাধ্যম সিলেক্ট করুন:", reply_markup=markup)
+            main_balance = user_data.get('main_balance', 0)
+            # ব্যালেন্স ২৪ টাকার কম হলে মেসেজ দিয়ে আটকে দিবে
+            if main_balance < 24:
+                bot.send_message(chat_id, "আপনার উইথড্র দেয়ার জন্য মিনিমাম 24 টাকা লাগবে")
+            else:
+                markup = types.InlineKeyboardMarkup()
+                markup.row(
+                    types.InlineKeyboardButton("বিকাশ", callback_data="withdraw_method:Bkash"),
+                    types.InlineKeyboardButton("নগদ", callback_data="withdraw_method:Nagad")
+                )
+                bot.send_message(chat_id, "আপনার পেমেন্ট মেথড সিলেক্ট করুন:", reply_markup=markup)
 
         elif text == '👥 Refer':
             bot_info = bot.get_me()
@@ -384,23 +316,32 @@ def select_withdraw_method(call):
     start_timeout_timer(chat_id, 120)
     bot.send_message(chat_id, f"আপনার {method} নম্বরটি দিন (সময়: ২ মিনিট):")
 
-# উইথড্র প্রসেসিং
-@bot.message_handler(func=lambda m: m.chat.id in user_states and 'method' in user_states[m.chat.id])
-def process_withdraw_steps(message):
+
+# --- ৪. স্টেট অনুযায়ী মেসেজ হ্যান্ডলিং (ইউনিফাইড মেকানিজম) ---
+@bot.message_handler(func=lambda m: m.chat.id in user_states)
+def process_submission_steps(message):
     chat_id = message.chat.id
     user_id = str(chat_id)
     state = user_states[chat_id]
     step = state.get('step')
+    text = message.text
 
+    # যদি ইউজার কোনো মেইন কিবোর্ড মেনু বাটন সিলেক্ট করে ফেলে, তবে আগের স্টেট বন্ধ করে নতুন রিকোয়েস্ট নিবে
+    if text in ['➕ Create Gmail Account', '📊 DASHBOARD', '💳 Withdraw', '👥 Refer', '🤝 Support']:
+        clear_user_state(chat_id)
+        handle_menu_buttons(message)
+        return
+
+    # --- উইথড্র স্টেপস ---
     if step == 'withdraw_number':
-        state['number'] = message.text
+        state['number'] = text
         state['step'] = 'withdraw_amount'
         start_timeout_timer(chat_id, 60)
         bot.send_message(chat_id, "কত টাকা উইথড্র করতে চান লিখুন (সময়: ১ মিনিট):")
 
     elif step == 'withdraw_amount':
         try:
-            amount = int(message.text)
+            amount = int(text)
         except ValueError:
             bot.send_message(chat_id, "দয়া করে সঠিক সংখ্যায় অ্যামাউন্ট দিন:")
             return
@@ -416,15 +357,18 @@ def process_withdraw_steps(message):
             if main_balance < amount or amount <= 0:
                 bot.send_message(chat_id, "❌ আপনার মেইন ব্যালেন্স এ পর্যাপ্ত টাকা নেই।")
             else:
+                # মেইন ব্যালেন্স থেকে অ্যামাউন্ট কেটে নেয়া হচ্ছে এবং বাকিটা রেখে দিচ্ছে
                 user_ref.update({
                     'main_balance': main_balance - amount
                 })
 
-                db.reference(f'withdraw/{user_id}').push({
+                # submit এর মধ্যে ডাটা রেখে দিচ্ছে স্ট্যাটাস পেন্ডিং হিসেবে
+                db.reference(f'submit/{user_id}').push({
                     'method': state['method'],
                     'number': state['number'],
                     'amount': amount,
-                    'status': 'pending'
+                    'status': 'pending',
+                    'type': 'withdraw'
                 })
 
                 bot.send_message(chat_id, f"আপনার {amount} টাকা উইথড্র রিকোয়েস্ট সফলভাবে জমা হয়েছে। এডমিন দ্রুত পেমেন্ট কমপ্লিট করবে।")
@@ -433,6 +377,58 @@ def process_withdraw_steps(message):
             print(f"Error processing withdraw: {e}")
             bot.send_message(chat_id, "উইথড্র সম্পন্ন করতে সমস্যা হয়েছে, পরে আবার চেষ্টা করুন।")
 
+        clear_user_state(chat_id)
+
+    # --- ক্রিয়েট জিমেইল আইডি ইনপুট নেওয়ার স্টেপস ---
+    elif step == 'get_task_id':
+        task_id = text.strip()
+        try:
+            # আইডি অনুযায়ী ডাটা পুনরায় সার্ভার থেকে তুলে আনা হচ্ছে
+            task_data = db.reference(f'task/{task_id}').get()
+            if not task_data:
+                bot.send_message(chat_id, "ভুল আইডি, দয়া করে সঠিক আইডি দিন:")
+                return
+            
+            task_pass = ""
+            if isinstance(task_data, dict):
+                task_pass = task_data.get('pass', '')
+            else:
+                task_pass = str(task_data)
+
+            state['task_id'] = task_id
+            state['task_pass'] = task_pass
+            state['step'] = 'get_gmail_email'
+            
+            # ৫ মিনিট সময় সেট করে ইউজারকে ইমেইল দিতে বলা হচ্ছে
+            start_timeout_timer(chat_id, 300)
+            bot.send_message(chat_id, "আপনার ইমেইল দিন (সময়: ৫ মিনিট):")
+
+        except Exception as e:
+            print(f"Error fetching task data: {e}")
+            bot.send_message(chat_id, "একটি ত্রুটি ঘটেছে, আবার চেষ্টা করুন।")
+            clear_user_state(chat_id)
+
+    elif step == 'get_gmail_email':
+        email_input = text.strip()
+        
+        if 'timer' in state:
+            state['timer'].cancel()
+
+        try:
+            # task_sub এর মধ্যে ডাটা পেন্ডিং হিসেবে রাখা হচ্ছে
+            db.reference(f'task_sub/{user_id}').push({
+                'gmail': email_input,
+                'pass': state.get('task_pass', ''),
+                'id': state.get('task_id', ''),
+                'status': 'pending'
+            })
+
+            bot.send_message(chat_id, "আপনার কাজ সাবমিট করা হয়েছে এডমিন রিভিউ করে আপনাকে জানাবে।")
+
+        except Exception as e:
+            print(f"Database write error: {e}")
+            bot.send_message(chat_id, "টাস্ক সাবমিট করতে সমস্যা হয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।")
+        
         clear_user_state(chat_id)
 
 
