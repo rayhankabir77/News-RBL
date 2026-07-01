@@ -22,8 +22,8 @@ def run_flask():
 BOT_TOKEN = "8801321117:AAH03Y0HuiSLnVZE2JFAfBJmc8nDkJOmXqU" 
 
 # আপনার চ্যানেলের ইউজারনেম বা আইডি (অবশ্যই @ সহ দিতে হবে)
-CHANNEL_1 = "@earnmoneybd1111"
-CHANNEL_2 = "@bbbbbbbbbb11111100"
+CHANNEL_1 = "@bmjdbdkidhr"
+CHANNEL_2 = "@bmjdbdkidhr"
 
 # চ্যানেল লিংক
 CHANNEL_1_LINK = "https://t.me/bmjdbdkidhr"
