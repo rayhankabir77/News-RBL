@@ -209,8 +209,8 @@ def handle_start(message):
         markup = types.InlineKeyboardMarkup()
         btn1 = types.InlineKeyboardButton("📢 চ্যানেল 1", url=f"https://t.me/{CHANNEL_1.replace('@', '')}")
         btn2 = types.InlineKeyboardButton("📢 চ্যানেল 2", url=f"https://t.me/{CHANNEL_2.replace('@', '')}")
-        btn3 = types.InlineKeyboardButton("📢 স্পন্সর 1 (1M+)", url=f"https://t.me/{SPONSOR_1.replace('@', '')}")
-        btn4 = types.InlineKeyboardButton("📢 blue স্পন্সর 2 (1M+)", url=f"https://t.me/{SPONSOR_2.replace('@', '')}")
+        btn3 = types.InlineKeyboardButton("📢 স্পন্সর 1 ", url=f"https://t.me/{SPONSOR_1.replace('@', '')}")
+        btn4 = types.InlineKeyboardButton("📢 blue স্পন্সর 2 ", url=f"https://t.me/{SPONSOR_2.replace('@', '')}")
         btn_verify = types.InlineKeyboardButton("ভেরিফাই ✅", callback_data=f"verify:{referrer_id}")
         
         markup.row(btn1, btn2)
@@ -419,7 +419,7 @@ def handle_menu_buttons(message):
         elif text == '📢 Sponsor Now':
             sponsor_text = (
                 f"📢 **বিজ্ঞাপন ও স্পন্সরশিপ অফার** 📢\n\n"
-                f"আপনার ব্র্যান্ড, канал কিংবা ওয়েবসাইটের প্রচারণা আমাদের বটের মাধ্যমে ১০ লক্ষাধিক ইউজারের কাছে পৌঁছে দিন! আমাদের রয়েছে অত্যন্ত সক্রিয় ইউজার বেস।\n\n"
+                f"আপনার ব্র্যান্ড, канал কিংবা ওয়েবসাইটের প্রচারণা আমাদের বটের মাধ্যমে ইউজারের কাছে পৌঁছে দিন! আমাদের রয়েছে অত্যন্ত সক্রিয় ইউজার বেস।\n\n"
                 f"🤝 **স্পন্সর বা বিজ্ঞাপনের জন্য সরাসরি যোগাযোগ করুন:**\n"
                 f"👉 **অ্যাডমিন:** @Rayhankabirooo\n\n"
                 f"*আপনার ব্যবসায়িক প্রচারণায় আমরা সবসময় পাশে আছি!*"
