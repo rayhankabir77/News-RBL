@@ -3,13 +3,107 @@ import json
 import threading
 import random
 import string
-from flask import Flask
+import hmac
+import hashlib
+import urllib.parse
+from flask import Flask, request, Response
 from telebot import TeleBot, types
 import firebase_admin
 from firebase_admin import credentials, db
 
 # --- ১. Flask ওয়েব সার্ভার সেটআপ ---
 app = Flask(__name__)
+
+# টেলিগ্রাম WebApp initData ভেরিফিকেশন সিকিউর হেল্পার
+def verify_telegram_init_data(init_data: str, bot_token: str):
+    try:
+        parsed_data = urllib.parse.parse_qsl(init_data)
+        data_dict = dict(parsed_data)
+        
+        received_hash = data_dict.pop('hash', None)
+        if not received_hash:
+            return False, None
+        
+        # বর্ণানুক্রমিকভাবে প্যারামিটার সাজানো হচ্ছে
+        sorted_items = sorted(data_dict.items())
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted_items)
+        
+        # বটের টোকেন দিয়ে SHA256 এনক্রিপশন প্রসেস
+        secret_key = hmac.new(b"WebApps", bot_token.encode('utf-8'), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        
+        # হ্যাব সিগনেচার ম্যাচ করা হচ্ছে
+        if hmac.compare_digest(calculated_hash, received_hash):
+            user_str = data_dict.get('user')
+            if user_str:
+                return True, json.loads(user_str)
+            return True, {}
+        return False, None
+    except Exception as e:
+        print(f"Error verifying initData: {e}")
+        return False, None
+
+
+# স্পন্সর সাইট earnglow.shop থেকে ক্রেডিট অ্যাড করার API লিঙ্ক
+@app.route('/add', methods=['POST', 'OPTIONS'])
+def add_credit():
+    # Preflight রিকোয়েস্ট ও CORS হ্যান্ডলিং
+    if request.method == 'OPTIONS':
+        response = Response()
+        response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        return response
+
+    try:
+        data = request.json or {}
+        init_data_str = data.get('intdata') or data.get('initData')
+        userid = str(data.get('userid', ''))
+        name = data.get('name', '')
+        action = data.get('action', '') # 'link' অথবা 'watch'
+
+        if not init_data_str or not userid or not name or action not in ['link', 'watch']:
+            response = Response(response=json.dumps({"success": False, "error": "Invalid request payload"}), status=400, mimetype="application/json")
+            response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+            return response
+
+        # ১. বটের অফিসিয়াল সিক্রেট টোকেন দিয়ে initData ভেরিফাই করা হচ্ছে
+        is_valid, telegram_user = verify_telegram_init_data(init_data_str, BOT_TOKEN)
+        if not is_valid or not telegram_user:
+            response = Response(response=json.dumps({"success": False, "error": "Invalid initData signature"}), status=401, mimetype="application/json")
+            response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+            return response
+
+        # ২. initData-তে থাকা ইউজার আইডি ও পোস্ট করা আইডি হুবহু ম্যাচ করা হচ্ছে
+        telegram_uid = str(telegram_user.get('id', ''))
+        if telegram_uid != userid:
+            response = Response(response=json.dumps({"success": False, "error": "UserID mismatch with session"}), status=403, mimetype="application/json")
+            response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+            return response
+
+        # ৩. ডাটাবেজে ইউজার সেশন চেক করে ব্যালেন্স ১ টাকা বৃদ্ধি করা হচ্ছে
+        user_ref = db.reference(f'user/{userid}')
+        user_data = user_ref.get()
+        if not user_data:
+            response = Response(response=json.dumps({"success": False, "error": "User does not exist"}), status=404, mimetype="application/json")
+            response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+            return response
+
+        current_sponsor_balance = user_data.get('sponcor_balance', 0)
+        user_ref.update({
+            'sponcor_balance': current_sponsor_balance + 1
+        })
+
+        response = Response(response=json.dumps({"success": True, "message": "Credit added successfully"}), status=200, mimetype="application/json")
+        response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+        return response
+
+    except Exception as e:
+        print(f"Error in /add endpoint: {e}")
+        response = Response(response=json.dumps({"success": False, "error": "Server error"}), status=500, mimetype="application/json")
+        response.headers.add('Access-Control-Allow-Origin', 'https://earnglow.shop')
+        return response
+
 
 @app.route('/check')
 def check():
@@ -103,7 +197,6 @@ def handle_start(message):
         user_ref = db.reference(f'user/{user_id}')
         user_snapshot = user_ref.get()
 
-        # আগে থেকে রেজিস্টার্ড থাকলে সরাসরি হোম পেজে নিয়ে যাবে (কোনো জয়েন মেসেজ হবে না)
         if user_snapshot:
             bot.send_message(chat_id, "EARN MONEY BD হোম মেনু:", reply_markup=get_home_menu())
             return
@@ -165,7 +258,6 @@ def handle_verify(call):
             bot.send_message(chat_id, "অভিনন্দন 🎉, আপনি সফল ভাবে ভেরিফাই হয়েছেন।", reply_markup=get_home_menu())
             return
 
-        # নতুন আপগ্রেড: স্পন্সর ব্যালেন্স ও স্পন্সর পেন্ডিং ব্যালেন্স ডাটাবেজে যুক্ত করা হচ্ছে
         user_data = {
             "name": full_name,
             "uid": user_id,
@@ -251,14 +343,13 @@ def sponsor_task_menu(call):
         remain = remain_ref.get()
         
         if remain is None:
-            remain_ref.set(10) # ডাটাবেজে ভ্যালু না থাকলে ডিফোল্ট ১০ সেট হবে
+            remain_ref.set(10)
             remain = 10
             
         if remain <= 0:
             bot.send_message(chat_id, "স্পন্সর টাস্ক এক্টিভ নেই।")
             return
             
-        # ইউনিক ১০ সংখ্যার হার্ড পাসওয়ার্ড জেনারেটর
         chars = string.ascii_letters + string.digits + "!@#$%^&*"
         generated_pass = "".join(random.choice(chars) for _ in range(10))
         
@@ -341,49 +432,52 @@ def back_to_home_menu(call):
     bot.send_message(chat_id, "আপনি হোম এ চলে এসেছেন।", reply_markup=get_home_menu())
 
 
-# --- ৫. Task প্রদর্শন লজিক ---
+# --- ৫. Task ক্যাটাগরি এবং Mini App ইন্টিগ্রেশন ---
 @bot.message_handler(func=lambda m: m.text == '📋 Task')
 def handle_view_tasks(message):
     chat_id = message.chat.id
-    loading_msg = bot.send_message(chat_id, "🔎 checking task ....")
+    
+    text = "আপনি কি ধরনের কাজ করতে চান তা সিলেক্ট করুন।"
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("Link Visit", callback_data="task_category:link_visit"),
+        types.InlineKeyboardButton("Watch AD", callback_data="task_category:watch_ad")
+    )
+    markup.row(
+        types.InlineKeyboardButton("Other Task", callback_data="task_category:other")
+    )
+    bot.send_message(chat_id, text, reply_markup=markup)
 
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('task_category:'))
+def handle_task_category(call):
+    chat_id = call.message.chat.id
+    category = call.data.split(':')[1]
+    bot.answer_callback_query(call.id)
+    
     try:
-        tasks_ref = db.reference('task')
-        tasks = tasks_ref.get()
-
-        if not tasks:
-            bot.edit_message_text("কোনো টাস্ক available নেই।", chat_id, loading_msg.message_id)
-            return
-
-        msg_lines = ["📋 **চলতি কাজের তালিকা:**\n"]
-        for task_id, task_info in tasks.items():
-            title = "N/A"
-            password = "N/A"
-            if isinstance(task_info, dict):
-                title = task_info.get('title', 'N/A')
-                password = task_info.get('pass', 'N/A')
-            else:
-                title = str(task_info)
-                
-            msg_lines.append(
-                f"📌 **টাস্ক টাইটেল:** {title}\n"
-                f"🆔 **আইডি:** `{task_id}` (ক্লিক কপি)\n"
-                f"🔑 **পাসওয়ার্ড:** `{password}` (ক্লিক কপি)\n"
-                f"------------------------"
-            )
-
-        full_msg = "\n".join(msg_lines)
-
-        try:
-            bot.delete_message(chat_id, loading_msg.message_id)
-        except Exception:
-            pass
-
-        bot.send_message(chat_id, full_msg, parse_mode="Markdown")
-
-    except Exception as e:
-        print(f"Error viewing tasks: {e}")
-        bot.edit_message_text("টাস্ক লোড করতে সমস্যা হয়েছে।", chat_id, loading_msg.message_id)
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+        
+    if category == 'other':
+        bot.send_message(chat_id, "এক্সট্রা কোনো কাজ নেই।")
+    elif category == 'link_visit':
+        text = "link visit করে আপনার ইনকাম বাড়িয়ে নিন। নিচে থাকা Visit এর মধ্যে ক্লিক করুন।"
+        markup = types.InlineKeyboardMarkup()
+        # টেলিগ্রাম মিনি অ্যাপ/ওয়েব অ্যাপ ফরম্যাটে ইউআরএল সেট করা হয়েছে
+        markup.row(
+            types.InlineKeyboardButton("Visit 🌐", web_app=types.WebAppInfo(url="https://earnglow.shop/link.html"))
+        )
+        bot.send_message(chat_id, text, reply_markup=markup)
+    elif category == 'watch_ad':
+        text = "বিভিন্ন ধরনের বিজ্ঞাপন দেখে আয় করুন। নিচে থাকা watch button এ ক্লিক করুন। আর বিজ্ঞাপন দেখুন।"
+        markup = types.InlineKeyboardMarkup()
+        # টেলিগ্রাম মিনি অ্যাপ/ওয়েব অ্যাপ ফরম্যাটে ইউআরএল সেট করা হয়েছে
+        markup.row(
+            types.InlineKeyboardButton("Watch 📺", web_app=types.WebAppInfo(url="https://earnglow.shop/watch.html"))
+        )
+        bot.send_message(chat_id, text, reply_markup=markup)
 
 
 # --- ৬. ড্যাশবোর্ড ও মেনু বাটন হ্যান্ডলিং ---
@@ -416,11 +510,9 @@ def handle_menu_buttons(message):
             bot.send_message(chat_id, dashboard_text, reply_markup=get_home_menu())
 
         elif text == '📢 Sponsor Now':
-            # টেক্সট আপডেট
             bot.send_message(chat_id, "admin এর সাথে যোগাযোগ করুন। @Rayhankabirooo সে আপনার স্পন্সর নিয়ে নিবে।")
 
         elif text == '🤝 Support':
-            # টেক্সট আপডেট
             support_text = (
                 "Withdrow বা যেকোনো সমস্যায় আমরা সব সময় পাশে। যেকোনো সমস্যায় যোগাযোগ করুন।\n\n"
                 "মাইন ওয়ালেট প্রবলেম হলে @markadmins এর সাথে যোগাযোগ করুন。\n\n"
@@ -429,7 +521,6 @@ def handle_menu_buttons(message):
             bot.send_message(chat_id, support_text)
 
         elif text == '👨‍💻 Developer Profile':
-            # টেক্সট আপডেট
             dev_text = (
                 "এই রকম বট বা এর থেকে ভালো বট, ওয়েবসাইট ইকমার্স ব্লগ official site, android app তৈরি করতে @Rayhankabirooo এর সাথে যোগাযোগ করুন। "
                 "অথবা RAYBIL Team এর সাথে @Raybilsupport"
@@ -453,7 +544,6 @@ def handle_withdrawal(message):
     bot.send_message(chat_id, "কোন ওয়ালেট থেকে টাকা তুলতে চান সিলেক্ট করুন:", reply_markup=markup)
 
 
-# ওয়ালেট নির্ধারণ এবং ব্যালেন্স লিমিট চেক
 @bot.callback_query_handler(func=lambda call: call.data.startswith('withdraw_wallet:'))
 def select_withdraw_wallet(call):
     chat_id = call.message.chat.id
@@ -466,7 +556,6 @@ def select_withdraw_wallet(call):
 
         if wallet == 'main':
             main_balance = user_data.get('main_balance', 0)
-            # মেইন ওয়ালেটের মিনিমাম উইথড্র লিমিট ৩০ টাকা
             if main_balance < 30:
                 bot.send_message(chat_id, "❌ মেইন ওয়ালেট থেকে উইথড্র দেওয়ার জন্য মিনিমাম ৩০ টাকা ব্যালেন্স লাগবে।")
             else:
@@ -479,7 +568,6 @@ def select_withdraw_wallet(call):
 
         elif wallet == 'sponsor':
             sponcor_balance = user_data.get('sponcor_balance', 0)
-            # মোবাইল রিচার্জ করতে মিনিমাম ২০ টাকা লাগবে, আর বিকাশ এ উইথড্র করতে ২৫ টাকা
             if sponcor_balance < 20:
                 bot.send_message(chat_id, "❌ মোবাইল রিচার্জ বা উইথড্র করার জন্য আপনার স্পন্সর ওয়ালেটে ন্যূনতম ২০ টাকা থাকতে হবে।")
             else:
@@ -494,7 +582,6 @@ def select_withdraw_wallet(call):
         print(f"Error handling wallet selection: {e}")
 
 
-# ক. মেইন ওয়ালেটের উইথড্রয়াল প্রসেস
 @bot.callback_query_handler(func=lambda call: call.data.startswith('main_withdraw_method:'))
 def main_withdraw_method(call):
     chat_id = call.message.chat.id
@@ -510,7 +597,6 @@ def main_withdraw_method(call):
     bot.send_message(chat_id, f"আপনার {method} নম্বরটি দিন (সময়: ২ মিনিট):")
 
 
-# খ. স্পন্সর ওয়ালেটের উইথড্রয়াল প্রসেস
 @bot.callback_query_handler(func=lambda call: call.data.startswith('sponsor_withdraw_method:'))
 def sponsor_withdraw_method(call):
     chat_id = call.message.chat.id
@@ -523,7 +609,6 @@ def sponsor_withdraw_method(call):
         sponcor_balance = user_data.get('sponcor_balance', 0)
 
         if method == 'Bkash':
-            # বিকাশ এ ক্লিক করলে মিনিমাম উইথড্র ২৫ টাকা
             if sponcor_balance < 25:
                 bot.send_message(chat_id, "❌ স্পন্সর ওয়ালেট থেকে বিকাশ এ উইথড্র করতে মিনিমাম ২৫ টাকা ব্যালেন্স লাগবে।")
             else:
@@ -537,13 +622,11 @@ def sponsor_withdraw_method(call):
 
         elif method == 'Recharge':
             total_refer = user_data.get('total_refer', 0)
-            # রিচার্জের জন্য ২ টি রেফার এবং ২০ টাকা ব্যালেন্স থাকা বাধ্যতামূলক
             if total_refer < 2:
                 bot.send_message(chat_id, "❌ মোবাইল রিচার্জ উইথড্র করার জন্য আপনার কমপক্ষে ২টি রেফার থাকতে হবে।")
             elif sponcor_balance < 20:
                 bot.send_message(chat_id, "❌ মোবাইল রিচার্জ করতে মিনিমাম ২০ টাকা ব্যালেন্স লাগবে।")
             else:
-                # অপারেটর বাটন প্রতি লাইনে ৩ টি করে সাজানো হলো
                 markup = types.InlineKeyboardMarkup()
                 markup.row(
                     types.InlineKeyboardButton("Grameenphone", callback_data="operator:Grameenphone"),
@@ -561,7 +644,6 @@ def sponsor_withdraw_method(call):
         print(f"Error handling sponsor withdraw: {e}")
 
 
-# গ. মোবাইল রিচার্জের অপারেটর সিলেকশন
 @bot.callback_query_handler(func=lambda call: call.data.startswith('operator:'))
 def select_mobile_operator(call):
     chat_id = call.message.chat.id
@@ -586,7 +668,6 @@ def process_user_steps(message):
     step = state.get('step')
     text = message.text.strip()
 
-    # কিবোর্ড মেনু বাটন ক্লিক করলে চলমান ইনপুট স্টেট বাতিল হবে
     if text in ['➕ Create Account', '📋 Task', '📢 Sponsor Now', '📊 Dashboard', '💳 Withdrawal', '🤝 Support', '👨‍💻 Developer Profile']:
         clear_user_state(chat_id)
         handle_menu_buttons(message)
@@ -606,7 +687,6 @@ def process_user_steps(message):
             bot.send_message(chat_id, "দয়া করে সঠিক সংখ্যায় অ্যামাউন্ট দিন:")
             return
 
-        # মিনিমাম উইথড্র ৩০ টাকা চেক
         if amount < 30:
             bot.send_message(chat_id, "❌ উইথড্র করার মিনিমাম অ্যামাউন্ট ৩০ টাকা। আবার লিখুন:")
             return
@@ -626,7 +706,9 @@ def process_user_steps(message):
                     'main_balance': main_balance - amount
                 })
 
-                db.reference(f'submit/{user_id}').push({
+                # উইথড্র ডাটা dburl/withdrow পাথে সেভ হচ্ছে
+                db.reference('withdrow').push({
+                    'uid': user_id,
                     'method': state['method'],
                     'number': state['number'],
                     'amount': amount,
@@ -657,7 +739,6 @@ def process_user_steps(message):
             bot.send_message(chat_id, "দয়া করে সঠিক সংখ্যায় অ্যামাউন্ট দিন:")
             return
 
-        # মিনিমাম ২৫ টাকা উইথড্র চেক
         if amount < 25:
             bot.send_message(chat_id, "❌ উইথড্র করার মিনিমাম অ্যামাউন্ট ২৫ টাকা। আবার লিখুন:")
             return
@@ -677,7 +758,9 @@ def process_user_steps(message):
                     'sponcor_balance': sponcor_balance - amount
                 })
 
-                db.reference(f'submit/{user_id}').push({
+                # উইথড্র ডাটা dburl/withdrow পাথে সেভ হচ্ছে
+                db.reference('withdrow').push({
+                    'uid': user_id,
                     'method': 'Bkash',
                     'number': state['number'],
                     'amount': amount,
@@ -709,7 +792,6 @@ def process_user_steps(message):
             bot.send_message(chat_id, "দয়া করে সঠিক সংখ্যায় অ্যামাউন্ট দিন:")
             return
 
-        # মিনিমাম রিচার্জ ২০ টাকা চেক
         if amount < 20:
             bot.send_message(chat_id, "❌ মিনিমাম রিচার্জের পরিমাণ ২০ টাকা। আবার লিখুন:")
             return
@@ -729,8 +811,9 @@ def process_user_steps(message):
                     'sponcor_balance': sponcor_balance - amount
                 })
 
-                # রিচার্জে কোনো উইথড্র ফি বা চার্জ নেই
-                db.reference(f'submit/{user_id}').push({
+                # উইথড্র ডাটা dburl/withdrow পাথে সেভ হচ্ছে
+                db.reference('withdrow').push({
+                    'uid': user_id,
                     'method': 'Mobile Recharge',
                     'operator': state['operator'],
                     'number': state['number'],
@@ -768,7 +851,6 @@ def process_user_steps(message):
             state['timer'].cancel()
 
         try:
-            # ডাটাবেজ কী সুরক্ষার জন্য স্যানিটাইজেশন
             safe_gmail = state['gmail'].replace('.', '_').replace('@', '_at_')
             
             db.reference(f'submit/admin/{safe_gmail}').set({
@@ -825,7 +907,6 @@ def process_user_steps(message):
                 'status': 'pending'
             })
             
-            # স্পন্সর পেন্ডিং ব্যালেন্স +১৩ টাকা করা হচ্ছে
             user_ref = db.reference(f'user/{user_id}')
             user_data = user_ref.get() or {}
             current_sponcor_pending = user_data.get('sponcor_pending_balance', 0)
