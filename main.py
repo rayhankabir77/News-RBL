@@ -3,7 +3,6 @@ import hmac
 import hashlib
 import urllib.parse
 import json
-import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +20,7 @@ dp = Dispatcher()
 app = FastAPI()
 
 ALLOWED_ORIGIN = "https://earnglow.raybil.me"
-ADMIN_ID = 8553769697  # Your Telegram ID for receiving logs
+REQUIRED_CHANNELS = ["@earnglowofficial", "@raybilofficial"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,22 +29,6 @@ app.add_middleware(
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )
-
-REQUIRED_CHANNELS = ["@earnglowofficial", "@raybilofficial"]
-
-# --- HELPER FUNCTION FOR LIVE TELEGRAM LOGGING ---
-async def send_log_to_admin(endpoint: str, request_data: dict, status_code: int, message: str):
-    """Sends detailed API execution logs directly to the admin's Telegram chat."""
-    try:
-        log_text = (
-            f"🔍 [API LOG] Endpoint: {endpoint}\n"
-            f"📊 Status Sent: {status_code}\n"
-            f"💬 Message/Reason: {message}\n\n"
-            f"📦 Request Payload:\n<pre>{json.dumps(request_data, indent=2)[:3500]}</pre>"
-        )
-        await bot.send_message(chat_id=ADMIN_ID, text=log_text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Failed to send log to admin: {e}")
 
 # --- TELEGRAM BOT LOGIC ---
 
@@ -110,54 +93,36 @@ async def check_channel_membership(user_id: int) -> bool:
 
 @app.post("/verify")
 async def verify_user(request: Request):
-    # Base template for tracing incoming data
-    log_payload = {
-        "headers": {
-            "origin": request.headers.get("origin"),
-            "referer": request.headers.get("referer"),
-            "user-agent": request.headers.get("user-agent")
-        },
-        "body": {}
-    }
-
-    # 1. CORS / Origin Hard Verification
+    # 1. CORS / Origin Verification
     origin = request.headers.get("origin")
     referer = request.headers.get("referer") or ""
     
     if origin != ALLOWED_ORIGIN and not referer.startswith(ALLOWED_ORIGIN):
-        await send_log_to_admin("/verify", log_payload, 404, "Blocked: Origin or Referer mismatch")
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # Read json body safely
     try:
         body = await request.json()
-        log_payload["body"] = body
     except Exception:
-        await send_log_to_admin("/verify", log_payload, 404, "Blocked: Invalid JSON Body")
         raise HTTPException(status_code=404, detail="Missing Body")
 
-    init_data = body.get("initData")
+    # হ্যান্ডেল করা হয়েছে 'intdata' বানানটি
+    init_data = body.get("intdata") or body.get("initData")
+    
     if not init_data:
-        await send_log_to_admin("/verify", log_payload, 404, "Blocked: Missing initData string in body")
         raise HTTPException(status_code=404, detail="Missing initData")
 
     # 2. Telegram Hash Check Verification
     user_data = verify_telegram_init_data(init_data, BOT_TOKEN)
     if not user_data or "id" not in user_data:
-        await send_log_to_admin("/verify", log_payload, 404, "Blocked: Telegram hash calculation verification failed")
         raise HTTPException(status_code=404, detail="Hash verification failed")
 
     user_id = user_data["id"]
-    log_payload["parsed_user_id"] = user_id
 
     # 3. Community Membership Channel Verification
     is_member = await check_channel_membership(user_id)
     if not is_member:
-        await send_log_to_admin("/verify", log_payload, 404, f"Blocked: User {user_id} has not joined all mandatory channels")
         raise HTTPException(status_code=404, detail="User has not joined required channels")
 
-    # 4. Successful Flow
-    await send_log_to_admin("/verify", log_payload, 200, "Success: User verified and validated successfully!")
     return JSONResponse(status_code=200, content={"status": "success", "message": "Verified"})
 
 
