@@ -1,19 +1,24 @@
-FROM python:3.10-slim
+# Use a lightweight official Python image
+FROM python:3.11-slim
 
-# কাজের ডিরেক্টরি সেট করা
+# Set environment paths and configurations
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
 
-# সিস্টেম ডিপেন্ডেন্সি ইনস্টল করা
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies if required
+RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
-# পাইথন প্যাকেজ কপি ও ইনস্টল করা
+# Copy configuration and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# বটের কোড কপি করা
-COPY . .
+# Copy the core script
+COPY main.py .
 
-# রান করার কমান্ড
-CMD ["python", "bot.py"]
+# Expose network port
+EXPOSE 8000
+
+# Execute the application
+CMD ["python", "main.py"]
